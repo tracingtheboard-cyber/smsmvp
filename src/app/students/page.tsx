@@ -1,37 +1,75 @@
 'use client';
 
-import React, { useState, useRef } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
 import { Plus, Search, Filter, MoreVertical, Upload, Download } from 'lucide-react';
 import * as XLSX from 'xlsx';
-import { mockStudents, mockIntakes } from '@/lib/mock-data';
+import { supabase } from '@/lib/supabase';
 import { cn } from '@/lib/utils';
 import { Modal } from '@/components/Modal';
+import { Student, Intake } from '@/types';
 
 export default function StudentsPage() {
+  const [students, setStudents] = useState<Student[]>([]);
+  const [intakes, setIntakes] = useState<Intake[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [intakeFilter, setIntakeFilter] = useState('');
   const [isModalOpen, setIsModalOpen] = useState(false);
-  const [students, setStudents] = useState(mockStudents);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [formData, setFormData] = useState({
     firstName: '',
     lastName: '',
     email: '',
-    intakeId: mockIntakes[0].id
+    intakeId: ''
   });
 
-  const handleSubmit = (e: React.FormEvent) => {
+  useEffect(() => {
+    async function loadData() {
+      const [{ data: studentsData }, { data: intakesData }] = await Promise.all([
+        supabase.from('students').select('*').order('joinDate', { ascending: false }),
+        supabase.from('intakes').select('*')
+      ]);
+      if (studentsData) setStudents(studentsData);
+      if (intakesData) {
+        setIntakes(intakesData);
+        if (intakesData.length > 0) {
+          setFormData(prev => ({ ...prev, intakeId: intakesData[0].id }));
+        }
+      }
+      setIsLoading(false);
+    }
+    loadData();
+  }, []);
+
+  const filteredStudents = students.filter(s => {
+    const matchSearch = `${s.firstName} ${s.lastName} ${s.email}`
+      .toLowerCase()
+      .includes(searchTerm.toLowerCase());
+    const matchIntake = !intakeFilter || s.intakeId === intakeFilter;
+    return matchSearch && matchIntake;
+  });
+
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    const newStudent = {
-      id: `s${students.length + 1}`,
+    const newStudent: Student = {
+      id: `s-${Date.now()}`,
       ...formData,
-      status: 'enrolled' as const,
-      phase: 'admission' as const,
+      status: 'enrolled',
+      phase: 'admission',
       joinDate: new Date().toISOString().split('T')[0]
     };
+
+    const { error } = await supabase.from('students').insert([newStudent]);
+    if (error) {
+      alert(`Error adding student: ${error.message}`);
+      return;
+    }
+
     setStudents([newStudent, ...students]);
     setIsModalOpen(false);
-    setFormData({ firstName: '', lastName: '', email: '', intakeId: mockIntakes[0].id });
+    setFormData({ firstName: '', lastName: '', email: '', intakeId: intakes[0]?.id || '' });
   };
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -39,48 +77,55 @@ export default function StudentsPage() {
     if (!file) return;
 
     const reader = new FileReader();
-    reader.onload = (event) => {
+    reader.onload = async (event) => {
       const data = new Uint8Array(event.target?.result as ArrayBuffer);
       const workbook = XLSX.read(data, { type: 'array' });
-      const sheetName = workbook.SheetNames[0];
-      const worksheet = workbook.Sheets[sheetName];
+      const worksheet = workbook.Sheets[workbook.SheetNames[0]];
       const json = XLSX.utils.sheet_to_json(worksheet);
 
-      const importedStudents = json.map((row: any, index: number) => ({
-        id: `s-import-${Date.now()}-${index}`,
+      const imported: Student[] = (json as any[]).map((row, i) => ({
+        id: `s-import-${Date.now()}-${i}`,
         firstName: row.FirstName || row['First Name'] || row.firstName || '',
         lastName: row.LastName || row['Last Name'] || row.lastName || '',
         email: row.Email || row.email || '',
-        intakeId: mockIntakes[0].id,
+        intakeId: row.IntakeID || row.intakeId || intakes[0]?.id || '',
         status: 'enrolled' as const,
         phase: 'admission' as const,
         joinDate: new Date().toISOString().split('T')[0]
-      })).filter((s: any) => s.firstName && s.email);
+      })).filter(s => s.firstName && s.email);
 
-      if (importedStudents.length > 0) {
-        setStudents(prev => [...importedStudents, ...prev]);
+      if (imported.length > 0) {
+        const { error } = await supabase.from('students').insert(imported);
+        if (error) {
+          alert(`Import error: ${error.message}`);
+        } else {
+          setStudents(prev => [...imported, ...prev]);
+        }
       }
-      
-      if (fileInputRef.current) {
-        fileInputRef.current.value = '';
-      }
+      if (fileInputRef.current) fileInputRef.current.value = '';
     };
     reader.readAsArrayBuffer(file);
   };
 
   const handleDownloadTemplate = () => {
     const ws = XLSX.utils.aoa_to_sheet([
-      ['First Name', 'Last Name', 'Email'],
-      ['张', '伟', 'zhang.wei@example.com'],
-      ['李', '娜', 'li.na@example.com']
+      ['First Name', 'Last Name', 'Email', 'IntakeID'],
+      ['张', '伟', 'zhang.wei@example.com', intakes[0]?.id || ''],
+      ['李', '娜', 'li.na@example.com', intakes[0]?.id || '']
     ]);
-    // Auto-size columns roughly
-    ws['!cols'] = [{ wch: 15 }, { wch: 15 }, { wch: 25 }];
-    
+    ws['!cols'] = [{ wch: 15 }, { wch: 15 }, { wch: 25 }, { wch: 20 }];
     const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "Template");
-    XLSX.writeFile(wb, "Student_Import_Template.xlsx");
+    XLSX.utils.book_append_sheet(wb, ws, 'Template');
+    XLSX.writeFile(wb, 'Student_Import_Template.xlsx');
   };
+
+  if (isLoading) {
+    return (
+      <div className="flex h-[50vh] items-center justify-center text-muted-foreground">
+        Loading students from database...
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
@@ -92,21 +137,25 @@ export default function StudentsPage() {
         <div className="flex gap-3">
           <div className="relative">
             <Filter className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" size={16} />
-            <select className="pl-9 pr-4 py-2 bg-muted border border-border rounded-xl text-sm outline-none focus:ring-2 focus:ring-primary/20 appearance-none">
+            <select
+              className="pl-9 pr-4 py-2 bg-muted border border-border rounded-xl text-sm outline-none focus:ring-2 focus:ring-primary/20 appearance-none"
+              value={intakeFilter}
+              onChange={e => setIntakeFilter(e.target.value)}
+            >
               <option value="">All Intakes</option>
-              {mockIntakes.map(i => (
+              {intakes.map(i => (
                 <option key={i.id} value={i.id}>{i.name}</option>
               ))}
             </select>
           </div>
-          <input 
-            type="file" 
-            accept=".xlsx, .xls, .csv" 
-            className="hidden" 
+          <input
+            type="file"
+            accept=".xlsx, .xls, .csv"
+            className="hidden"
             ref={fileInputRef}
             onChange={handleFileUpload}
           />
-          <button 
+          <button
             onClick={handleDownloadTemplate}
             className="flex items-center gap-2 bg-secondary text-secondary-foreground border border-border px-4 py-2.5 rounded-xl font-semibold hover:bg-muted transition-colors"
             title="Download Excel Template"
@@ -114,14 +163,14 @@ export default function StudentsPage() {
             <Download size={18} />
             Template
           </button>
-          <button 
+          <button
             onClick={() => fileInputRef.current?.click()}
             className="flex items-center gap-2 bg-secondary text-secondary-foreground border border-border px-4 py-2.5 rounded-xl font-semibold hover:bg-muted transition-colors"
           >
             <Upload size={18} />
             Import
           </button>
-          <button 
+          <button
             onClick={() => setIsModalOpen(true)}
             className="flex items-center gap-2 bg-primary text-primary-foreground px-4 py-2.5 rounded-xl font-semibold hover:opacity-90 transition-opacity"
           >
@@ -131,20 +180,18 @@ export default function StudentsPage() {
         </div>
       </div>
 
-      {/* Filters & Search */}
+      {/* Search */}
       <div className="flex flex-col sm:flex-row gap-4">
         <div className="relative flex-1">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" size={18} />
-          <input 
-            type="text" 
-            placeholder="Search students by name or email..." 
+          <input
+            type="text"
+            placeholder="Search students by name or email..."
+            value={searchTerm}
+            onChange={e => setSearchTerm(e.target.value)}
             className="w-full pl-10 pr-4 py-2.5 bg-card border border-border rounded-xl focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none transition-all"
           />
         </div>
-        <button className="flex items-center gap-2 px-4 py-2.5 border border-border rounded-xl hover:bg-muted transition-colors text-foreground font-medium">
-          <Filter size={18} />
-          Filters
-        </button>
       </div>
 
       {/* Students Table */}
@@ -162,8 +209,8 @@ export default function StudentsPage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
-              {students.map((student) => {
-                const intake = mockIntakes.find(i => i.id === student.intakeId);
+              {filteredStudents.map((student) => {
+                const intake = intakes.find(i => i.id === student.intakeId);
                 return (
                   <tr key={student.id} className="group hover:bg-muted/30 transition-colors">
                     <td className="px-6 py-4">
@@ -178,13 +225,15 @@ export default function StudentsPage() {
                     </td>
                     <td className="px-6 py-4 text-sm text-muted-foreground">{student.email}</td>
                     <td className="px-6 py-4">
-                      <span className="text-sm font-medium text-foreground">{intake?.name}</span>
+                      <span className="text-sm font-medium text-foreground">{intake?.name || student.intakeId}</span>
                     </td>
                     <td className="px-6 py-4">
                       <span className={cn(
                         "text-[10px] uppercase tracking-wider font-bold px-2 py-1 rounded-full",
-                        student.status === 'enrolled' ? "bg-blue-100 text-blue-600" : 
-                        student.status === 'graduated' ? "bg-emerald-100 text-emerald-600" : "bg-gray-100 text-gray-600"
+                        student.status === 'active' ? "bg-emerald-100 text-emerald-600" :
+                        student.status === 'enrolled' ? "bg-blue-100 text-blue-600" :
+                        student.status === 'graduated' ? "bg-purple-100 text-purple-600" :
+                        "bg-gray-100 text-gray-600"
                       )}>
                         {student.status}
                       </span>
@@ -200,64 +249,67 @@ export default function StudentsPage() {
                   </tr>
                 );
               })}
+              {filteredStudents.length === 0 && (
+                <tr>
+                  <td colSpan={6} className="px-6 py-12 text-center text-muted-foreground">
+                    No students found.
+                  </td>
+                </tr>
+              )}
             </tbody>
           </table>
         </div>
       </div>
 
-      <Modal 
-        isOpen={isModalOpen} 
-        onClose={() => setIsModalOpen(false)} 
-        title="Register New Student"
-      >
+      <Modal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} title="Register New Student">
         <form onSubmit={handleSubmit} className="space-y-4">
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
               <label className="text-sm font-medium">First Name</label>
-              <input 
+              <input
                 required
                 className="w-full bg-muted border border-border rounded-xl px-4 py-2.5 outline-none focus:ring-2 focus:ring-primary/20"
                 value={formData.firstName}
-                onChange={(e) => setFormData({...formData, firstName: e.target.value})}
+                onChange={e => setFormData({ ...formData, firstName: e.target.value })}
                 placeholder="Alex"
               />
             </div>
             <div className="space-y-2">
               <label className="text-sm font-medium">Last Name</label>
-              <input 
+              <input
                 required
                 className="w-full bg-muted border border-border rounded-xl px-4 py-2.5 outline-none focus:ring-2 focus:ring-primary/20"
                 value={formData.lastName}
-                onChange={(e) => setFormData({...formData, lastName: e.target.value})}
+                onChange={e => setFormData({ ...formData, lastName: e.target.value })}
                 placeholder="Johnson"
               />
             </div>
           </div>
           <div className="space-y-2">
             <label className="text-sm font-medium">Email Address</label>
-            <input 
+            <input
               required
               type="email"
               className="w-full bg-muted border border-border rounded-xl px-4 py-2.5 outline-none focus:ring-2 focus:ring-primary/20"
               value={formData.email}
-              onChange={(e) => setFormData({...formData, email: e.target.value})}
+              onChange={e => setFormData({ ...formData, email: e.target.value })}
               placeholder="alex@school.com"
             />
           </div>
           <div className="space-y-2">
             <label className="text-sm font-medium">Select Intake (Batch)</label>
-            <select 
+            <select
               className="w-full bg-muted border border-border rounded-xl px-4 py-2.5 outline-none focus:ring-2 focus:ring-primary/20"
               value={formData.intakeId}
-              onChange={(e) => setFormData({...formData, intakeId: e.target.value})}
+              onChange={e => setFormData({ ...formData, intakeId: e.target.value })}
             >
-              {mockIntakes.map(intake => (
+              {intakes.map(intake => (
                 <option key={intake.id} value={intake.id}>{intake.name}</option>
               ))}
             </select>
           </div>
           <div className="pt-4">
-            <button 
+            <button
               type="submit"
               className="w-full bg-primary text-primary-foreground py-3 rounded-xl font-bold hover:opacity-90 transition-opacity"
             >

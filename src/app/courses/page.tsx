@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import Link from 'next/link';
 import { 
   BookOpen, 
@@ -10,19 +10,20 @@ import {
   ChevronRight,
   MoreVertical,
   Clock,
-  Award,
   Upload,
   Download
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
-import { mockCourses, mockModules, mockStudents } from '@/lib/mock-data';
+import { supabase } from '@/lib/supabase';
 import { cn } from '@/lib/utils';
 import { useRole } from '@/lib/RoleContext';
 import { Modal } from '@/components/Modal';
-import { Course } from '@/types';
+import { Course, Module } from '@/types';
 
 export default function CoursesPage() {
-  const [courses, setCourses] = useState<Course[]>(mockCourses);
+  const [courses, setCourses] = useState<Course[]>([]);
+  const [courseModulesMap, setCourseModulesMap] = useState<Record<string, Module[]>>({});
+  const [isLoading, setIsLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const { canEditCurriculum } = useRole();
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -36,6 +37,28 @@ export default function CoursesPage() {
     duration: '12 Months',
     studyMode: 'Both' as 'Full-Time' | 'Part-Time' | 'Both'
   });
+
+  useEffect(() => {
+    async function loadData() {
+      const [{ data: coursesData }, { data: modulesData }] = await Promise.all([
+        supabase.from('courses').select('*'),
+        supabase.from('modules').select('*').order('order', { ascending: true })
+      ]);
+      if (coursesData) setCourses(coursesData);
+      if (modulesData) {
+        const map: Record<string, Module[]> = {};
+        modulesData.forEach(m => {
+          if (m.courseId) {
+            if (!map[m.courseId]) map[m.courseId] = [];
+            map[m.courseId].push(m);
+          }
+        });
+        setCourseModulesMap(map);
+      }
+      setIsLoading(false);
+    }
+    loadData();
+  }, []);
 
   const filteredCourses = courses.filter(course => 
     course.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -60,15 +83,16 @@ export default function CoursesPage() {
     setIsModalOpen(true);
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (editingCourse) {
+      const { error } = await supabase.from('courses').update(formData).eq('id', editingCourse.id);
+      if (error) { alert(`Error: ${error.message}`); return; }
       setCourses(courses.map(c => c.id === editingCourse.id ? { ...c, ...formData } : c));
     } else {
-      const newCourse: Course = {
-        id: formData.code.toLowerCase(),
-        ...formData
-      };
+      const newCourse: Course = { id: formData.code.toLowerCase(), ...formData };
+      const { error } = await supabase.from('courses').insert([newCourse]);
+      if (error) { alert(`Error: ${error.message}`); return; }
       setCourses([...courses, newCourse]);
     }
     setIsModalOpen(false);
@@ -96,7 +120,9 @@ export default function CoursesPage() {
       })).filter((c: any) => c.name && c.code);
 
       if (importedCourses.length > 0) {
-        setCourses(prev => [...importedCourses, ...prev]);
+        const { error } = await supabase.from('courses').insert(importedCourses);
+        if (error) { alert(`Import error: ${error.message}`); }
+        else { setCourses(prev => [...importedCourses, ...prev]); }
       }
       
       if (fileInputRef.current) {
@@ -117,6 +143,14 @@ export default function CoursesPage() {
     XLSX.utils.book_append_sheet(wb, ws, "Courses_Template");
     XLSX.writeFile(wb, "Course_Import_Template.xlsx");
   };
+
+  if (isLoading) {
+    return (
+      <div className="flex h-[50vh] items-center justify-center text-muted-foreground">
+        Loading courses from database...
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500 pb-20">
@@ -162,11 +196,7 @@ export default function CoursesPage() {
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
         {filteredCourses.map((course) => {
-          const courseModules = mockModules.filter(m => m.courseId === course.id);
-          const studentCount = mockStudents.filter(s => {
-            // This is a simplified check for demo
-            return true; // In real app, we'd check student -> intake -> course
-          }).length;
+          const courseModules = courseModulesMap[course.id] || [];
 
           return (
             <div key={course.id} className="group bg-card rounded-3xl border border-border overflow-hidden shadow-sm hover:shadow-xl hover:border-primary/30 transition-all duration-300 flex flex-col">
@@ -216,7 +246,7 @@ export default function CoursesPage() {
                     <span className="text-[10px] font-bold text-muted-foreground uppercase">Students</span>
                     <div className="flex items-center gap-1 font-bold text-foreground">
                       <Users size={14} className="text-primary" />
-                      {studentCount} Active
+                      — Active
                     </div>
                   </div>
                   <div className="flex flex-col gap-1">
