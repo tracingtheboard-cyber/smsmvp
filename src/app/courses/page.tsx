@@ -29,6 +29,8 @@ export default function CoursesPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [isModuleImportOpen, setIsModuleImportOpen] = useState(false);
+  const [moduleRawData, setModuleRawData] = useState('');
   const [editingCourse, setEditingCourse] = useState<Course | null>(null);
   const [formData, setFormData] = useState({
     name: '',
@@ -144,6 +146,43 @@ export default function CoursesPage() {
     XLSX.writeFile(wb, "Course_Import_Template.xlsx");
   };
 
+  const handleModuleImport = async () => {
+    if (!moduleRawData.trim()) return;
+
+    // Parse lines: CourseCode  ModuleCode  ModuleTitle ...
+    const lines = moduleRawData.split('\n');
+    const modulesToInsert: any[] = [];
+    
+    lines.forEach((line, idx) => {
+      const parts = line.split('\t'); // Excel paste is usually tab-separated
+      if (parts.length >= 3) {
+        const courseCode = parts[0].trim().toLowerCase();
+        const moduleTitle = parts[2].trim();
+        const moduleCode = parts[1].trim();
+        
+        if (courseCode && moduleTitle) {
+          modulesToInsert.push({
+            id: `${courseCode}-${moduleCode.toLowerCase()}-${idx}`,
+            courseId: courseCode,
+            title: moduleTitle,
+            order: modulesToInsert.filter(m => m.courseId === courseCode).length + 1
+          });
+        }
+      }
+    });
+
+    if (modulesToInsert.length > 0) {
+      const { error } = await supabase.from('modules').upsert(modulesToInsert);
+      if (error) alert(`Error: ${error.message}`);
+      else {
+        alert(`Successfully imported ${modulesToInsert.length} modules!`);
+        setIsModuleImportOpen(false);
+        setModuleRawData('');
+        window.location.reload(); // Refresh to show new modules
+      }
+    }
+  };
+
   if (isLoading) {
     return (
       <div className="flex h-[50vh] items-center justify-center text-muted-foreground">
@@ -183,13 +222,22 @@ export default function CoursesPage() {
               <Upload size={18} />
               Import
             </button>
+            <div className="flex gap-3">
             <button 
-              onClick={openCreateModal}
-              className="flex items-center gap-2 bg-primary text-primary-foreground px-4 py-2.5 rounded-xl font-semibold hover:opacity-90 transition-opacity shadow-lg shadow-primary/20"
+              onClick={() => setIsModuleImportOpen(true)}
+              className="flex items-center gap-2 px-4 py-2 bg-muted hover:bg-muted/80 text-foreground font-bold rounded-xl transition-all border border-border"
+            >
+              <Layers size={18} />
+              Bulk Import Modules
+            </button>
+            <button 
+              onClick={() => setIsModalOpen(true)}
+              className="flex items-center gap-2 px-6 py-2 bg-primary text-white font-bold rounded-xl hover:bg-primary/90 transition-all shadow-lg shadow-primary/20"
             >
               <Plus size={18} />
-              Create New Course
+              Add Course
             </button>
+          </div>
           </div>
         )}
       </div>
@@ -370,6 +418,41 @@ export default function CoursesPage() {
             </button>
           </div>
         </form>
+      </Modal>
+
+      {/* Module Import Modal */}
+      <Modal
+        isOpen={isModuleImportOpen}
+        onClose={() => setIsModuleImportOpen(false)}
+        title="Bulk Import Modules"
+      >
+        <div className="space-y-4">
+          <div className="p-4 bg-primary/5 rounded-xl border border-primary/10">
+            <p className="text-xs text-primary font-bold">
+              Instructions: Copy columns (Course Code, Module Code, Module Title) from Excel and paste here.
+            </p>
+          </div>
+          <textarea
+            className="w-full h-64 bg-muted border border-border rounded-2xl p-4 text-xs font-mono outline-none focus:ring-2 focus:ring-primary/20"
+            placeholder="ACEEY	M01	Child Development..."
+            value={moduleRawData}
+            onChange={(e) => setModuleRawData(e.target.value)}
+          />
+          <div className="flex justify-end gap-3">
+            <button
+              onClick={() => setIsModuleImportOpen(false)}
+              className="px-6 py-2 text-sm font-bold text-muted-foreground"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={handleModuleImport}
+              className="px-6 py-2 bg-primary text-white font-bold rounded-xl shadow-lg"
+            >
+              Import Now
+            </button>
+          </div>
+        </div>
       </Modal>
     </div>
   );
