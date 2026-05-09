@@ -233,7 +233,7 @@ export default function CoursesPage() {
               <div className="bg-muted/30 px-8 py-6 border-t border-border mt-auto">
                 <h4 className="text-xs font-black text-muted-foreground uppercase tracking-widest mb-4">Module Structure</h4>
                 <div className="space-y-3">
-                  {courseModules.sort((a, b) => a.order - b.order).slice(0, 3).map((module) => (
+                  {courseModules.sort((a, b) => (a.order ?? 0) - (b.order ?? 0)).slice(0, 3).map((module) => (
                     <div key={module.id} className="flex items-center justify-between p-3 bg-card border border-border rounded-xl group/mod hover:border-primary/20 transition-all">
                       <div className="flex items-center gap-3">
                         <div className="w-8 h-8 rounded-lg bg-muted flex items-center justify-center text-[10px] font-bold text-muted-foreground group-hover/mod:bg-primary/10 group-hover/mod:text-primary transition-colors">
